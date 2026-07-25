@@ -52,6 +52,30 @@ const parseStyleId = (voiceId: string): number => {
   return styleId;
 };
 
+const withRequestAbortSignal = async <T>(
+  parentSignal: AbortSignal,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> => {
+  if (parentSignal.aborted) {
+    throw parentSignal.reason ?? new DOMException('Aborted', 'AbortError');
+  }
+
+  const controller = new AbortController();
+  const forwardAbort = () => {
+    controller.abort(parentSignal.reason ?? new DOMException('Aborted', 'AbortError'));
+  };
+  parentSignal.addEventListener('abort', forwardAbort, { once: true });
+  if (parentSignal.aborted) forwardAbort();
+
+  try {
+    return await operation(controller.signal);
+  } finally {
+    // Tauri HTTP retains the request signal listener after consuming the body.
+    // Stop completed requests from receiving the paragraph's later cleanup abort.
+    parentSignal.removeEventListener('abort', forwardAbort);
+  }
+};
+
 export class VoicevoxSpeechProvider implements SpeechProvider {
   readonly id = 'voicevox';
   readonly label = 'VOICEVOX';
@@ -119,12 +143,14 @@ export class VoicevoxSpeechProvider implements SpeechProvider {
       speaker: String(styleId),
     });
 
-    const queryResponse = await tauriFetch(`${this.#endpoint}/audio_query?${params}`, {
-      method: 'POST',
-      signal,
+    const query = await withRequestAbortSignal(signal, async (requestSignal) => {
+      const response = await tauriFetch(`${this.#endpoint}/audio_query?${params}`, {
+        method: 'POST',
+        signal: requestSignal,
+      });
+      if (!response.ok) throw await responseError('audio query', response);
+      return await response.json();
     });
-    if (!queryResponse.ok) throw await responseError('audio query', queryResponse);
-    const query = await queryResponse.json();
     if (!query || typeof query !== 'object' || Array.isArray(query)) {
       throw new SpeechSynthesisPermanentError('VOICEVOX returned an invalid audio query');
     }
@@ -136,14 +162,16 @@ export class VoicevoxSpeechProvider implements SpeechProvider {
     if (signal.aborted) {
       throw signal.reason ?? new DOMException('Aborted', 'AbortError');
     }
-    const synthesisResponse = await tauriFetch(`${this.#endpoint}/synthesis?speaker=${styleId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(query),
-      signal,
+    const audio = await withRequestAbortSignal(signal, async (requestSignal) => {
+      const response = await tauriFetch(`${this.#endpoint}/synthesis?speaker=${styleId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(query),
+        signal: requestSignal,
+      });
+      if (!response.ok) throw await responseError('synthesis', response);
+      return await response.arrayBuffer();
     });
-    if (!synthesisResponse.ok) throw await responseError('synthesis', synthesisResponse);
-    const audio = await synthesisResponse.arrayBuffer();
     if (!audio.byteLength) {
       throw new SpeechSynthesisPermanentError('VOICEVOX returned no audio data');
     }

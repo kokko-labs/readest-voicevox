@@ -99,7 +99,7 @@ describe('VoicevoxSpeechProvider', () => {
     const wav = new Uint8Array([0x52, 0x49, 0x46, 0x46]);
     fetchMock.mockResolvedValueOnce(Response.json(query)).mockResolvedValueOnce(new Response(wav));
 
-    const signal = new AbortController().signal;
+    const controller = new AbortController();
     const result = await new VoicevoxSpeechProvider().synthesize(
       {
         lang: 'ja-JP',
@@ -107,7 +107,7 @@ describe('VoicevoxSpeechProvider', () => {
         voice: 'voicevox:3',
         pitch: 2,
       },
-      signal,
+      controller.signal,
     );
 
     expect(new Uint8Array(result.audio)).toEqual(wav);
@@ -117,7 +117,7 @@ describe('VoicevoxSpeechProvider', () => {
       `${DEFAULT_VOICEVOX_ENDPOINT}/audio_query?text=${encodeURIComponent(
         'こんにちは',
       )}+${encodeURIComponent('世界')}&speaker=3`,
-      { method: 'POST', signal },
+      { method: 'POST', signal: expect.any(AbortSignal) },
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
@@ -126,9 +126,32 @@ describe('VoicevoxSpeechProvider', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...query, pitchScale: 0.15 }),
-        signal,
+        signal: expect.any(AbortSignal),
       },
     );
+  });
+
+  test('does not abort completed native HTTP responses during paragraph cleanup', async () => {
+    fetchMock
+      .mockResolvedValueOnce(Response.json({ accent_phrases: [] }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([0x52])));
+    const controller = new AbortController();
+
+    await new VoicevoxSpeechProvider().synthesize(
+      { lang: 'ja-JP', text: '読み上げ', voice: 'voicevox:3', pitch: 1 },
+      controller.signal,
+    );
+
+    const requestSignals = fetchMock.mock.calls.map((call) => call[1]?.signal as AbortSignal);
+    expect(requestSignals).toHaveLength(2);
+    expect(requestSignals[0]).not.toBe(controller.signal);
+    expect(requestSignals[1]).not.toBe(controller.signal);
+    expect(requestSignals[0]).not.toBe(requestSignals[1]);
+
+    controller.abort(new DOMException('Paragraph finished', 'AbortError'));
+
+    expect(requestSignals[0]?.aborted).toBe(false);
+    expect(requestSignals[1]?.aborted).toBe(false);
   });
 
   test('reports non-successful VOICEVOX responses', async () => {
@@ -182,7 +205,10 @@ describe('VoicevoxSpeechProvider', () => {
     controller.abort(new DOMException('Aborted', 'AbortError'));
 
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
-    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    const requestSignal = fetchMock.mock.calls[0]?.[1]?.signal;
+    expect(requestSignal).not.toBe(controller.signal);
+    expect(requestSignal?.aborted).toBe(true);
+    expect(requestSignal?.reason).toMatchObject({ name: 'AbortError' });
   });
 });
 
