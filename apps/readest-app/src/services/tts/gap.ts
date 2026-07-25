@@ -28,3 +28,16 @@ const EMPHATIC_GAP_FACTOR = 2;
 
 export const gapAfterSentence = (gapSec: number, text: string): number =>
   EMPHATIC_END_RE.test(text) ? gapSec * EMPHATIC_GAP_FACTOR : gapSec;
+
+// Silence inserted between paragraphs when auto-advancing during continuous
+// playback. Unlike the Edge-only inter-sentence gap, this applies to every
+// TTS client: the paragraph-to-paragraph transition (stop -> next -> speak)
+// is engine-agnostic, handled entirely in TTSController's #speak()/forward().
+// There is no natural pause here otherwise -- the transition is as fast as the
+// async stop/init overhead allows, which reads as no pause at all.
+//
+// It lives here rather than in TTSController so that BufferedTTSClient can read
+// it without a runtime import of the controller: that edge would close a cycle
+// (controller -> subclass -> BufferedTTSClient) and leave whichever subclass is
+// pulled in mid-evaluation extending an undefined base class.
+export const DEFAULT_PARAGRAPH_GAP_SEC = 0.3;

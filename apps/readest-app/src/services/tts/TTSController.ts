@@ -28,6 +28,7 @@ import { ReadestVoiceProvider } from './providers/readest';
 import { OpenAICompatibleSpeechProvider } from './providers/openaiCompatible';
 import type { CustomTTSService } from '@/types/customTTS';
 import { getAccessToken, isCustomTTSAllowed } from '@/utils/access';
+import { VoicevoxTTSClient } from './VoicevoxTTSClient';
 import { SectionTimeline, TimelineSentence } from './SectionTimeline';
 import { estimateSentenceSeconds, hydrateProvisionalDurations } from './ttsDuration';
 import { DownloadableSentence, SectionEnumerator, TTSDownloader } from './TTSDownloader';
@@ -36,6 +37,7 @@ import { TTSClient } from './TTSClient';
 import { startAudioKeepAlive, stopAudioKeepAlive } from './WebAudioPlayer';
 import { isSameLang, isValidLang } from '@/utils/lang';
 import { normalizeLyricText } from '@/utils/ttsLyrics';
+import { DEFAULT_PARAGRAPH_GAP_SEC } from './gap';
 import {
   computeWordOffsets,
   getTextSubRange,
@@ -146,13 +148,9 @@ export interface TTSViewBindings {
   onSectionChange?: (sectionIndex: number) => Promise<void>;
 }
 
-// Silence inserted between paragraphs when auto-advancing during continuous
-// playback. Unlike the Edge-only inter-sentence gap, this applies to every
-// TTS client: the paragraph-to-paragraph transition (stop -> next -> speak)
-// is engine-agnostic, handled entirely in #speak()/forward() below. There is
-// no natural pause here otherwise -- the transition is as fast as the async
-// stop/init overhead allows, which reads as no pause at all.
-export const DEFAULT_PARAGRAPH_GAP_SEC = 0.3;
+// Defined in ./gap so BufferedTTSClient can read it without importing this
+// module at runtime; re-exported here because this is where callers expect it.
+export { DEFAULT_PARAGRAPH_GAP_SEC } from './gap';
 
 const drawTint = (opacity: string) => (rects: DOMRectList, options: Record<string, unknown>) => {
   const g = Overlayer.highlight(rects, options);
@@ -272,11 +270,13 @@ export class TTSController extends EventTarget {
   #customTTSServices: () => CustomTTSService[] = () => [];
   ttsNativeClient: TTSClient | null = null;
   ttsMediaOverlayClient: MediaOverlayClient;
+  ttsVoicevoxClient: VoicevoxTTSClient | null = null;
   ttsWebVoices: TTSVoice[] = [];
   ttsEdgeVoices: TTSVoice[] = [];
   ttsReadestVoices: TTSVoice[] = [];
   ttsCustomVoices: TTSVoice[] = [];
   ttsNativeVoices: TTSVoice[] = [];
+  ttsVoicevoxVoices: TTSVoice[] = [];
   ttsTargetLang: string = '';
 
   options: TTSHighlightOptions = { style: 'highlight', color: 'gray' };
@@ -319,6 +319,9 @@ export class TTSController extends EventTarget {
       this.ttsNativeClient = new NativeTTSClient(this);
     }
     this.ttsMediaOverlayClient = new MediaOverlayClient(this);
+    if (appService?.isDesktopApp) {
+      this.ttsVoicevoxClient = new VoicevoxTTSClient(this, appService);
+    }
     this.ttsClient = this.ttsWebClient;
     this.appService = appService;
     this.view = view;
@@ -507,6 +510,9 @@ export class TTSController extends EventTarget {
       ? withinEngineTimeout(this.ttsNativeClient.init(), false)
       : undefined;
     const webReady = withinEngineTimeout(this.ttsWebClient.init(), false);
+    const voicevoxReady = this.ttsVoicevoxClient
+      ? withinEngineTimeout(this.ttsVoicevoxClient.init(), false)
+      : undefined;
     if (await edgeReady) {
       availableClients.push(this.ttsEdgeClient);
     }
@@ -525,6 +531,10 @@ export class TTSController extends EventTarget {
     const customOk = await customReady;
     if (customOk) {
       availableClients.push(this.ttsCustomClient);
+    }
+    if (this.ttsVoicevoxClient && (await voicevoxReady)) {
+      availableClients.push(this.ttsVoicevoxClient);
+      this.ttsVoicevoxVoices = await this.ttsVoicevoxClient.getAllVoices();
     }
     this.ttsClient = availableClients[0] || this.ttsWebClient;
     const preferredClientName = TTSUtils.getPreferredClient();
@@ -942,8 +952,8 @@ export class TTSController extends EventTarget {
     }
   }
 
-  // Build (or return) the virtual timeline for the current section. Edge-only:
-  // it is the only client with measurable audio durations and a chunk clock.
+  // Build (or return) the virtual timeline for the current section when the
+  // active buffered client exposes a measurable audio clock.
   // Callers invoke this off the playback path (panel poll, media session).
   async ensureTimeline(): Promise<SectionTimeline | null> {
     if (!this.ttsClient.getCapabilities().mediaClock) return null;
@@ -1238,13 +1248,13 @@ export class TTSController extends EventTarget {
     return this.ttsClient.getCapabilities().gapControl;
   }
 
-  // Passthrough to the Edge client's inter-sentence gap. ttsEdgeClient is
-  // always a constructed instance, whether or not it's the currently active
-  // client (same as supportsPlaybackInfo/supportsGapControl's comparison).
+  // Keep every buffered client in sync with the global gap setting so a later
+  // voice switch does not restore that client's default gap.
   setSentenceGap(sec: number): void {
     this.ttsEdgeClient.setSentenceGap(sec);
     this.ttsReadestClient.setSentenceGap(sec);
     this.ttsCustomClient.setSentenceGap(sec);
+    this.ttsVoicevoxClient?.setSentenceGap(sec);
   }
 
   // Universal (not Edge-only) paragraph-to-paragraph gap, in wall-clock
@@ -1257,6 +1267,7 @@ export class TTSController extends EventTarget {
     this.ttsEdgeClient.setParagraphGap(sec);
     this.ttsReadestClient.setParagraphGap(sec);
     this.ttsCustomClient.setParagraphGap(sec);
+    this.ttsVoicevoxClient?.setParagraphGap(sec);
   }
 
   // Abortable delay inserted before auto-advancing to the next paragraph.
@@ -1291,7 +1302,7 @@ export class TTSController extends EventTarget {
   }
 
   // Position/duration of the current section playback at the current rate.
-  // Null while no timeline exists (non-Edge client, timeline not yet built,
+  // Null while no timeline exists (client without a media clock, timeline not yet built,
   // or nothing located yet) — the UI reserves a disabled slot for that state.
   getPlaybackInfo(): { position: number; duration: number; measuredFraction: number } | null {
     if (!this.ttsClient.getCapabilities().mediaClock) return null;
@@ -2211,6 +2222,7 @@ export class TTSController extends EventTarget {
     if (this.ttsWebClient.initialized) this.ttsWebClient.setPrimaryLang(lang);
     if (this.ttsNativeClient?.initialized) this.ttsNativeClient?.setPrimaryLang(lang);
     if (this.ttsMediaOverlayClient.initialized) this.ttsMediaOverlayClient.setPrimaryLang(lang);
+    if (this.ttsVoicevoxClient?.initialized) this.ttsVoicevoxClient.setPrimaryLang(lang);
   }
 
   async setRate(rate: number) {
@@ -2246,6 +2258,7 @@ export class TTSController extends EventTarget {
     const ttsCustomVoices = this.ttsCustomClient.initialized
       ? (await this.ttsCustomClient.getVoices(lang)).filter((group) => group.voices.length > 0)
       : [];
+    const ttsVoicevoxVoices = (await this.ttsVoicevoxClient?.getVoices(lang)) ?? [];
 
     const voicesGroups = [
       ...narrationVoices,
@@ -2254,6 +2267,7 @@ export class TTSController extends EventTarget {
       ...ttsEdgeVoices,
       ...ttsNativeVoices,
       ...ttsWebVoices,
+      ...ttsVoicevoxVoices,
     ];
     return voicesGroups;
   }
@@ -2299,6 +2313,9 @@ export class TTSController extends EventTarget {
     const useNativeTTS = !!this.ttsNativeVoices.find(
       (voice) => (voiceId === '' || voice.id === voiceId) && !voice.disabled,
     );
+    const useVoicevoxTTS =
+      voiceId !== '' &&
+      !!this.ttsVoicevoxVoices.find((voice) => voice.id === voiceId && !voice.disabled);
     if (useCustomTTS) {
       this.ttsClient = this.ttsCustomClient;
       await this.ttsClient.setRate(this.ttsRate);
@@ -2313,6 +2330,12 @@ export class TTSController extends EventTarget {
         throw new Error('Native TTS client is not available');
       }
       this.ttsClient = this.ttsNativeClient;
+      await this.ttsClient.setRate(this.ttsRate);
+    } else if (useVoicevoxTTS) {
+      if (!this.ttsVoicevoxClient) {
+        throw new Error('VOICEVOX TTS client is not available');
+      }
+      this.ttsClient = this.ttsVoicevoxClient;
       await this.ttsClient.setRate(this.ttsRate);
     } else {
       this.ttsClient = this.ttsWebClient;
@@ -2687,6 +2710,9 @@ export class TTSController extends EventTarget {
     }
     if (this.ttsMediaOverlayClient.initialized) {
       await this.ttsMediaOverlayClient.shutdown();
+    }
+    if (this.ttsVoicevoxClient?.initialized) {
+      await this.ttsVoicevoxClient.shutdown();
     }
   }
 }
