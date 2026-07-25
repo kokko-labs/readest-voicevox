@@ -27,9 +27,9 @@ const makeMockClient = (name: string): TTSClient => ({
   getVoices: vi.fn().mockResolvedValue([]),
   getGranularities: vi.fn().mockReturnValue(['sentence']),
   getCapabilities: vi.fn().mockReturnValue({
-    wordBoundaries: true,
-    mediaClock: true,
-    gapControl: true,
+    wordBoundaries: name === 'edge-tts',
+    mediaClock: name === 'edge-tts' || name === 'voicevox',
+    gapControl: name === 'edge-tts' || name === 'voicevox',
     liveRateChange: false,
   }),
   getVoiceId: vi.fn().mockReturnValue('timeline-ctrl-voice'),
@@ -61,6 +61,12 @@ vi.mock('@/services/tts/EdgeTTSClient', () => ({
 vi.mock('@/services/tts/NativeTTSClient', () => ({
   NativeTTSClient: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     Object.assign(this, makeMockClient('native'));
+  }),
+}));
+
+vi.mock('@/services/tts/VoicevoxTTSClient', () => ({
+  VoicevoxTTSClient: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
+    Object.assign(this, makeMockClient('voicevox'));
   }),
 }));
 

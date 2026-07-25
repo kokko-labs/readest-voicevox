@@ -29,6 +29,12 @@ vi.mock('@/services/tts/NativeTTSClient', () => ({
   }),
 }));
 
+vi.mock('@/services/tts/VoicevoxTTSClient', () => ({
+  VoicevoxTTSClient: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
+    Object.assign(this, createMockTTSClient('voicevox'), { setSentenceGap: vi.fn() });
+  }),
+}));
+
 // Track the inaudible background keep-alive (WebAudio) toggled for direct-speak
 // engines. Arrow closures so the vi.mock hoist never hits a TDZ on these consts.
 const startKeepAlive = vi.fn();
@@ -68,9 +74,11 @@ vi.mock('@/utils/node', () => ({
 
 vi.mock('@/utils/lang', () => ({
   isValidLang: vi.fn(() => true),
+  isCJKLang: vi.fn(() => false),
 }));
 
 vi.mock('foliate-js/tts.js', () => ({
+  getSentences: vi.fn().mockReturnValue([]),
   TTS: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     Object.assign(this, {
       start: vi.fn().mockReturnValue('<speak>hello</speak>'),
@@ -113,8 +121,8 @@ function createMockTTSClient(name: string): TTSClient {
     getGranularities: vi.fn().mockReturnValue(['word', 'sentence'] as TTSGranularity[]),
     getCapabilities: vi.fn().mockImplementation(() => ({
       wordBoundaries: name === 'edge',
-      mediaClock: name === 'edge',
-      gapControl: name === 'edge',
+      mediaClock: name === 'edge' || name === 'voicevox',
+      gapControl: name === 'edge' || name === 'voicevox',
       liveRateChange: false,
     })),
     getVoiceId: vi.fn().mockReturnValue('voice-1'),
@@ -161,10 +169,11 @@ function createMockView(): FoliateView {
 
 // --- Helper: create mock AppService ---
 
-function createMockAppService(isAndroid = false, isIOS = false): AppService {
+function createMockAppService(isAndroid = false, isIOS = false, isDesktop = false): AppService {
   return {
     isAndroidApp: isAndroid,
     isIOSApp: isIOS,
+    isDesktopApp: isDesktop,
   } as unknown as AppService;
 }
 
@@ -271,6 +280,14 @@ describe('TTSController', () => {
       expect(controller.ttsNativeClient).toBeNull();
     });
 
+    test('creates VOICEVOX client only for desktop apps', () => {
+      const desktopService = createMockAppService(false, false, true);
+      const desktopController = new TTSController(desktopService, mockView);
+
+      expect(desktopController.ttsVoicevoxClient).not.toBeNull();
+      expect(controller.ttsVoicevoxClient).toBeNull();
+    });
+
     test('stores preprocessCallback', () => {
       const cb = vi.fn();
       const c = new TTSController(mockAppService, mockView, false, cb);
@@ -325,6 +342,27 @@ describe('TTSController', () => {
       expect(c.ttsNativeClient!.init).toHaveBeenCalled();
       expect(c.ttsNativeClient!.getAllVoices).toHaveBeenCalled();
     });
+
+    test('initializes VOICEVOX on desktop without changing the Edge-first default', async () => {
+      const desktopService = createMockAppService(false, false, true);
+      const c = new TTSController(desktopService, mockView);
+
+      await c.init();
+
+      expect(c.ttsVoicevoxClient!.init).toHaveBeenCalled();
+      expect(c.ttsVoicevoxClient!.getAllVoices).toHaveBeenCalled();
+      expect(c.ttsClient.name).toBe('edge');
+    });
+
+    test('restores VOICEVOX when it is the preferred available client', async () => {
+      vi.mocked(TTSUtils.getPreferredClient).mockReturnValue('voicevox');
+      const desktopService = createMockAppService(false, false, true);
+      const c = new TTSController(desktopService, mockView);
+
+      await c.init();
+
+      expect(c.ttsClient.name).toBe('voicevox');
+    });
   });
 
   describe('setRate', () => {
@@ -350,12 +388,74 @@ describe('TTSController', () => {
       controller.ttsClient = controller.ttsWebClient;
       expect(controller.supportsGapControl()).toBe(false);
     });
+
+    test('returns true for VOICEVOX', () => {
+      const c = new TTSController(createMockAppService(false, false, true), mockView);
+      c.ttsClient = c.ttsVoicevoxClient!;
+
+      expect(c.supportsGapControl()).toBe(true);
+    });
   });
 
   describe('setSentenceGap', () => {
     test('delegates to ttsEdgeClient.setSentenceGap with the given value', () => {
       controller.setSentenceGap(0.5);
       expect(controller.ttsEdgeClient.setSentenceGap).toHaveBeenCalledWith(0.5);
+    });
+
+    test('keeps Edge and VOICEVOX gap settings in sync', () => {
+      const c = new TTSController(createMockAppService(false, false, true), mockView);
+      c.ttsClient = c.ttsVoicevoxClient!;
+
+      c.setSentenceGap(0.75);
+
+      expect(
+        (
+          c.ttsVoicevoxClient as TTSClient & {
+            setSentenceGap: ReturnType<typeof vi.fn>;
+          }
+        ).setSentenceGap,
+      ).toHaveBeenCalledWith(0.75);
+      expect(c.ttsEdgeClient.setSentenceGap).toHaveBeenCalledWith(0.75);
+    });
+  });
+
+  describe('buffered playback information', () => {
+    test('supports a VOICEVOX client with a media clock', () => {
+      const c = new TTSController(createMockAppService(false, false, true), mockView);
+      c.ttsClient = c.ttsVoicevoxClient!;
+
+      expect(c.supportsPlaybackInfo()).toBe(true);
+    });
+
+    test('builds and reports a timeline for VOICEVOX', async () => {
+      document.body.innerHTML = '<p>VOICEVOX sentence.</p>';
+      const textNode = document.body.firstElementChild!.firstChild as Text;
+      const sentenceRange = document.createRange();
+      sentenceRange.selectNodeContents(textNode);
+      const { getSentences } = await import('foliate-js/tts.js');
+      vi.mocked(getSentences).mockReturnValueOnce(
+        (function* () {
+          yield { blockIndex: 0, markName: '0', range: sentenceRange };
+        })(),
+      );
+      const c = new TTSController(createMockAppService(false, false, true), mockView);
+      c.ttsClient = c.ttsVoicevoxClient!;
+      await c.initViewTTS(0);
+      mockView.tts = {
+        getLastRange: vi.fn().mockReturnValue(sentenceRange),
+      } as unknown as FoliateView['tts'];
+
+      const timeline = await c.ensureTimeline();
+      const info = c.getPlaybackInfo();
+
+      expect(timeline).not.toBeNull();
+      expect(info).toEqual({
+        position: 0,
+        duration: expect.any(Number),
+        measuredFraction: 0,
+      });
+      expect(info!.duration).toBeGreaterThan(0);
     });
   });
 
@@ -418,6 +518,33 @@ describe('TTSController', () => {
       await controller.setVoice('ev', 'en');
       expect(controller.ttsClient.setRate).toHaveBeenCalledWith(1.8);
     });
+
+    test('switches to VOICEVOX for an explicit namespaced voice ID', async () => {
+      const desktopService = createMockAppService(false, false, true);
+      const c = new TTSController(desktopService, mockView);
+      await c.init();
+      c.ttsVoicevoxVoices = [{ id: 'voicevox:3', name: 'ずんだもん (ノーマル)', lang: 'ja-JP' }];
+
+      await c.setVoice('voicevox:3', 'ja');
+
+      expect(c.ttsClient.name).toBe('voicevox');
+      expect(c.ttsVoicevoxClient!.setVoice).toHaveBeenCalledWith('voicevox:3');
+      expect(TTSUtils.setPreferredClient).toHaveBeenCalledWith('voicevox');
+      expect(TTSUtils.setPreferredVoice).toHaveBeenCalledWith('voicevox', 'ja', 'voicevox:3');
+    });
+
+    test('does not make VOICEVOX the implicit client for an empty voice ID', async () => {
+      const desktopService = createMockAppService(false, false, true);
+      const c = new TTSController(desktopService, mockView);
+      await c.init();
+      c.ttsEdgeVoices = [];
+      c.ttsNativeVoices = [];
+      c.ttsVoicevoxVoices = [{ id: 'voicevox:3', name: 'ずんだもん (ノーマル)', lang: 'ja-JP' }];
+
+      await c.setVoice('', 'ja');
+
+      expect(c.ttsClient.name).toBe('web');
+    });
   });
 
   describe('getVoices', () => {
@@ -449,6 +576,27 @@ describe('TTSController', () => {
 
       const result = await c.getVoices('en');
       expect(result).toEqual(nativeVoices);
+    });
+
+    test('appends the VOICEVOX Japanese voice group on desktop', async () => {
+      const desktopService = createMockAppService(false, false, true);
+      const c = new TTSController(desktopService, mockView);
+      await c.init();
+      const voicevoxVoices: TTSVoicesGroup[] = [
+        {
+          id: 'voicevox',
+          name: 'VOICEVOX',
+          voices: [{ id: 'voicevox:3', name: 'ずんだもん (ノーマル)', lang: 'ja-JP' }],
+        },
+      ];
+      vi.mocked(c.ttsVoicevoxClient!.getVoices).mockResolvedValue(voicevoxVoices);
+      vi.mocked(c.ttsEdgeClient.getVoices).mockResolvedValue([]);
+      vi.mocked(c.ttsWebClient.getVoices).mockResolvedValue([]);
+
+      const result = await c.getVoices('ja');
+
+      expect(result).toEqual(voicevoxVoices);
+      expect(c.ttsVoicevoxClient!.getVoices).toHaveBeenCalledWith('ja');
     });
   });
 
@@ -502,6 +650,16 @@ describe('TTSController', () => {
 
       expect(controller.ttsEdgeClient.setPrimaryLang).not.toHaveBeenCalled();
       expect(controller.ttsWebClient.setPrimaryLang).not.toHaveBeenCalled();
+    });
+
+    test('propagates the primary language to an initialized VOICEVOX client', async () => {
+      const desktopService = createMockAppService(false, false, true);
+      const c = new TTSController(desktopService, mockView);
+      c.ttsVoicevoxClient!.initialized = true;
+
+      await c.setPrimaryLang('ja');
+
+      expect(c.ttsVoicevoxClient!.setPrimaryLang).toHaveBeenCalledWith('ja');
     });
   });
 
@@ -1356,6 +1514,17 @@ describe('TTSController', () => {
       await c.shutdown();
 
       expect(c.ttsNativeClient!.shutdown).toHaveBeenCalled();
+    });
+
+    test('shuts down VOICEVOX client when initialized', async () => {
+      const desktopService = createMockAppService(false, false, true);
+      const c = new TTSController(desktopService, mockView);
+      c.ttsVoicevoxClient!.initialized = true;
+
+      vi.spyOn(c, 'stop').mockResolvedValue();
+      await c.shutdown();
+
+      expect(c.ttsVoicevoxClient!.shutdown).toHaveBeenCalled();
     });
 
     test('skips shutdown of uninitialized clients', async () => {

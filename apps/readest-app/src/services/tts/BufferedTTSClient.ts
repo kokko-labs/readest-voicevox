@@ -7,7 +7,10 @@ import { TTSWordBoundary } from '@/libs/edgeTTS';
 import { TTSGranularity, TTSMark, TTSVoice, TTSVoicesGroup } from './types';
 import { AppService } from '@/types/system';
 import { parseSSMLMarks } from '@/utils/ssml';
-import { DEFAULT_PARAGRAPH_GAP_SEC, TTSController } from './TTSController';
+import { DEFAULT_PARAGRAPH_GAP_SEC } from './gap';
+// Type-only: a runtime import would close a cycle through the controller's
+// client subclasses, which extend this class.
+import type { TTSController } from './TTSController';
 import { TTSUtils } from './TTSUtils';
 import { findBoundaryIndexAtTime } from './wordHighlight';
 import { applyEdgeFade, findSpeechBounds } from './pcm';
