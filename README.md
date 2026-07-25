@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> This repository is an unofficial fork of [readest/readest](https://github.com/readest/readest). It adds desktop integration with a separately installed, locally running VOICEVOX Engine. It is not an official product of, affiliated with, or endorsed by the Readest project, Bilingify LLC, VOICEVOX, or any VOICEVOX character or voice-library rights holder. See [FORK.md](FORK.md) for details.
+
 <div align="center">
   <a href="https://readest.com?utm_source=github&utm_medium=referral&utm_campaign=readme" target="_blank">
     <img src="https://github.com/readest/readest/blob/main/apps/readest-app/src-tauri/icons/icon.png?raw=true" alt="Readest Logo" width="20%" />
