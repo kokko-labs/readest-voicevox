@@ -65,3 +65,6 @@ apps/readest.koplugin/native/localsend-bin/target/
 
 # Local task tracking
 /tasks/todo.md
+/tasks/lessons.md
+/tasks/rebase.md
+/tasks/release.md
