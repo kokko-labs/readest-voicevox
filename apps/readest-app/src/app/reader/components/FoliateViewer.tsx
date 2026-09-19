@@ -43,6 +43,7 @@ import {
   applyLinkHitArea,
   applyScrollbarStyle,
   applyScrollModeClass,
+  applyTextlessWritingMode,
   applyThemeModeClass,
   applyTranslationStyle,
   getOverlayerBlendMode,
@@ -395,9 +396,12 @@ const FoliateViewer: React.FC<{
       applyNamespacedAttributes(detail.doc);
       applyLinkHitArea(detail.doc);
       const renderer = viewRef.current?.renderer;
-      const writingDir = renderer?.setStyles && getDirection(detail.doc);
       const viewSettings = getViewSettings(bookKey)!;
       const bookData = getBookData(bookKey)!;
+      if (!bookData?.isFixedLayout) {
+        applyTextlessWritingMode(detail.doc, viewSettings);
+      }
+      const writingDir = renderer?.setStyles && getDirection(detail.doc);
 
       const newVertical =
         writingDir?.vertical || viewSettings.writingMode.includes('vertical') || false;

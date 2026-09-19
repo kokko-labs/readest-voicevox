@@ -1657,6 +1657,28 @@ export const applyScrollbarStyle = (document: Document, hideScrollbar: boolean) 
   }
 };
 
+/* A section without text (a full-page illustration or cover) has no writing
+   direction of its own, yet vertical books routinely mark such pages
+   horizontal (e.g. the `hltr` image pages of Japanese EPUB templates). Taken
+   at face value, the page flips the reader to horizontal: the page margins
+   switch, the paginator stops preloading it so page turns skip it, and the
+   layout stays mismatched until the book is reopened. Give it the book's
+   current writing mode instead; the renderer reads the direction right after
+   the load event, so this must run before that. */
+export const applyTextlessWritingMode = (document: Document, viewSettings: ViewSettings) => {
+  // A fixed writing mode is already forced on every section by getStyles.
+  if (viewSettings.writingMode !== 'auto' || !document.body) return;
+  if (document.body.textContent?.trim()) return;
+  const writingMode = viewSettings.vertical
+    ? viewSettings.rtl
+      ? 'vertical-rl'
+      : 'vertical-lr'
+    : 'horizontal-tb';
+  for (const el of [document.documentElement, document.body]) {
+    el.style.setProperty('writing-mode', writingMode, 'important');
+  }
+};
+
 export const applyImageStyle = (document: Document) => {
   const win = document.defaultView ?? window;
   // Two-phase (read then write): reading getComputedStyle after a class/style

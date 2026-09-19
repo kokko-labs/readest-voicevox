@@ -27,6 +27,7 @@ import {
   getStyles,
   applyImageStyle,
   applyNamespacedAttributes,
+  applyTextlessWritingMode,
   keepTextAlignment,
   applyLinkHitArea,
   LINK_HIT_AREA_CLASS,
@@ -501,6 +502,62 @@ describe('getStyles', () => {
     // The size-clamp rule must not carry vertical-align anymore.
     const clampRule = css.match(/\n\s*img\.has-text-siblings\s*\{[^}]*\}/)![0];
     expect(clampRule).not.toContain('vertical-align');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyTextlessWritingMode
+// ---------------------------------------------------------------------------
+describe('applyTextlessWritingMode', () => {
+  const makeDoc = (bodyHTML: string, htmlClass = 'hltr') => {
+    const doc = document.implementation.createHTMLDocument('');
+    doc.documentElement.className = htmlClass;
+    doc.body.innerHTML = bodyHTML;
+    return doc;
+  };
+  const imagePage =
+    '\n  <div class="main">\n    <svg viewBox="0 0 1000 1500"><image width="1000" height="1500"/></svg>\n  </div>\n';
+  const writingModeOf = (el: HTMLElement) => ({
+    value: el.style.getPropertyValue('writing-mode'),
+    priority: el.style.getPropertyPriority('writing-mode'),
+  });
+
+  it('gives a text-less page the vertical-rl mode of a vertical book', () => {
+    const doc = makeDoc(imagePage);
+    applyTextlessWritingMode(doc, makeViewSettings({ vertical: true, rtl: true }));
+    expect(writingModeOf(doc.documentElement)).toEqual({
+      value: 'vertical-rl',
+      priority: 'important',
+    });
+    expect(writingModeOf(doc.body)).toEqual({ value: 'vertical-rl', priority: 'important' });
+  });
+
+  it('uses vertical-lr for a vertical book that is not right-to-left', () => {
+    const doc = makeDoc('<img src="a.jpg" alt="illustration">');
+    applyTextlessWritingMode(doc, makeViewSettings({ vertical: true, rtl: false }));
+    expect(doc.body.style.getPropertyValue('writing-mode')).toBe('vertical-lr');
+  });
+
+  it('uses horizontal-tb for a horizontal book', () => {
+    const doc = makeDoc(imagePage, 'vrtl');
+    applyTextlessWritingMode(doc, makeViewSettings({ vertical: false, rtl: false }));
+    expect(doc.body.style.getPropertyValue('writing-mode')).toBe('horizontal-tb');
+  });
+
+  it('leaves a page with text to its own writing mode', () => {
+    const doc = makeDoc('<p>本文</p><img src="a.jpg">');
+    applyTextlessWritingMode(doc, makeViewSettings({ vertical: true, rtl: true }));
+    expect(doc.documentElement.style.getPropertyValue('writing-mode')).toBe('');
+    expect(doc.body.style.getPropertyValue('writing-mode')).toBe('');
+  });
+
+  it('does nothing when the writing mode is fixed in the settings', () => {
+    const doc = makeDoc(imagePage);
+    applyTextlessWritingMode(
+      doc,
+      makeViewSettings({ writingMode: 'horizontal-tb', vertical: true, rtl: true }),
+    );
+    expect(doc.body.style.getPropertyValue('writing-mode')).toBe('');
   });
 });
 
