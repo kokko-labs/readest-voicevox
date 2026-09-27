@@ -2670,5 +2670,7 @@
   "{{count}} voices available_two": "{{count}} קולות זמינים",
   "{{count}} voices available_other": "{{count}} קולות זמינים",
   "Multilingual": "רב-לשוני",
-  "Expressive": "אקספרסיבי"
+  "Expressive": "אקספרסיבי",
+  "Chunk Size": "גודל מקטע",
+  "Up to {{n}} chars": "עד {{n}} תווים"
 }

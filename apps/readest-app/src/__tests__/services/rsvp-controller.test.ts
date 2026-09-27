@@ -3,6 +3,28 @@ import { RSVPController } from '@/services/rsvp/RSVPController';
 import { FoliateView } from '@/types/view';
 
 const POSITION_KEY = 'readest_rsvp_pos_test';
+const MAX_CHUNK_CHARS_KEY = 'readest_rsvp_max_chunk_chars';
+
+// BudouX ships a statistical model whose output could shift between releases,
+// so the chunking tests use a deterministic stand-in: a 文節 ends after every
+// 「は」 and after every 「。」. Enough structure to exercise the mapping from
+// phrase offsets onto tokens without pinning the tests to model data.
+const budoux = vi.hoisted(() => ({
+  ready: true,
+  parseJaPhraseBoundaries: vi.fn((text: string): number[] => {
+    const boundaries: number[] = [];
+    for (let i = 0; i < text.length - 1; i++) {
+      if (text[i] === 'は' || text[i] === '。') boundaries.push(i + 1);
+    }
+    return boundaries;
+  }),
+}));
+
+vi.mock('@/utils/budoux', () => ({
+  initBudoux: vi.fn().mockResolvedValue(undefined),
+  isBudouxReady: () => budoux.ready,
+  parseJaPhraseBoundaries: budoux.parseJaPhraseBoundaries,
+}));
 
 function makeTextNode(text: string): Text {
   return { nodeType: Node.TEXT_NODE, textContent: text } as unknown as Text;
@@ -949,6 +971,375 @@ describe('RSVPController', () => {
 
       // Before the fix this was null (instanceof Range failed cross-realm).
       expect(resolved).toBe(crossRealmRange);
+    });
+  });
+
+  // Full-width punctuation never matched the trailing-punctuation test in
+  // getWordDisplayDuration, so Japanese and Chinese sentences flashed past their
+  // sentence ends with no extra pause at all.
+  describe('punctuation pause for full-width punctuation', () => {
+    beforeEach(() => localStorage.clear());
+    afterEach(() => localStorage.clear());
+
+    test('a word ending in 。 earns the punctuation pause', () => {
+      const view = createMockView(0, [makeDoc('これ。 あれ')]);
+      const controller = new RSVPController(view, 'pause-book-abc123');
+      controller.setWpm(600); // 100ms base per word
+      controller.setPunctuationPause(200);
+      controller.setStartDelay(0);
+      controller.start();
+
+      const first = controller.currentState.words[0]!;
+      expect(first.text.endsWith('。')).toBe(true);
+      const baseMs = (60000 / 600) * first.pauseMultiplier;
+
+      // Past the base duration but short of the extra pause: still on word 0.
+      vi.advanceTimersByTime(baseMs + 50);
+      expect(controller.currentState.currentIndex).toBe(0);
+
+      vi.advanceTimersByTime(200);
+      expect(controller.currentState.currentIndex).toBe(1);
+    });
+
+    test('a word ending in 。」 earns the punctuation pause', () => {
+      // The terminator is not the last character — a closing bracket follows it.
+      const view = createMockView(0, [makeDoc('ある。」 次')]);
+      const controller = new RSVPController(view, 'pause-book-abc123');
+      controller.setWpm(600);
+      controller.setPunctuationPause(200);
+      controller.setStartDelay(0);
+      controller.start();
+
+      const first = controller.currentState.words[0]!;
+      expect(first.text).toBe('ある。」');
+      const baseMs = (60000 / 600) * first.pauseMultiplier;
+
+      vi.advanceTimersByTime(baseMs + 50);
+      expect(controller.currentState.currentIndex).toBe(0);
+
+      vi.advanceTimersByTime(200);
+      expect(controller.currentState.currentIndex).toBe(1);
+    });
+  });
+
+  describe('chunk display (max chunk chars)', () => {
+    beforeEach(() => {
+      localStorage.clear();
+      budoux.ready = true;
+      budoux.parseJaPhraseBoundaries.mockClear();
+    });
+    afterEach(() => {
+      localStorage.clear();
+      budoux.ready = true;
+    });
+
+    // Real jsdom document so the merged chunk ranges (and the position-preserving
+    // re-extraction, which compares boundary points) behave like the book iframe.
+    function makeDomFixture(html: string, primaryLanguage?: string) {
+      const doc = document.implementation.createHTMLDocument('chunk');
+      doc.body.innerHTML = html;
+      const view = {
+        renderer: {
+          primaryIndex: 0,
+          getContents: vi.fn().mockReturnValue([{ doc, index: 0 }]),
+        },
+        book: { toc: [] },
+        language: { isCJK: false },
+        tts: null,
+        getCFI: vi.fn().mockReturnValue('epubcfi(/6/2!/4/2/1:0)'),
+        resolveCFI: vi.fn().mockReturnValue(null),
+      } as unknown as FoliateView;
+      const controller = new RSVPController(view, 'chunk-book-abc123', primaryLanguage);
+      return { controller, doc };
+    }
+
+    const wordTexts = (controller: RSVPController): string[] =>
+      controller.currentState.words.map((w) => w.text);
+
+    test('defaults to off and offers the documented options', () => {
+      const { controller } = makeDomFixture('<p>one two three</p>');
+
+      expect(controller.currentState.maxChunkChars).toBe(0);
+      expect(controller.getChunkCharOptions()).toEqual([0, 6, 8, 10, 12, 16, 20]);
+    });
+
+    test('leaves the word list untouched while off', () => {
+      const { controller } = makeDomFixture('<p>one two three</p>');
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['one', 'two', 'three']);
+      expect(controller.currentState.words.every((w) => w.tokenCount === undefined)).toBe(true);
+    });
+
+    test('setMaxChunkChars persists the choice and is restored on construction', () => {
+      const { controller } = makeDomFixture('<p>one two</p>');
+      controller.setMaxChunkChars(12);
+      expect(localStorage.getItem(MAX_CHUNK_CHARS_KEY)).toBe('12');
+
+      const { controller: restored } = makeDomFixture('<p>one two</p>');
+      expect(restored.currentState.maxChunkChars).toBe(12);
+    });
+
+    test('setMaxChunkChars re-extracts the active section and keeps the position', () => {
+      const { controller } = makeDomFixture('<p>one two three four five six</p>');
+      controller.start();
+      controller.seekToIndex(4); // "five"
+      expect(controller.currentState.words[4]!.text).toBe('five');
+
+      controller.setMaxChunkChars(10);
+
+      expect(wordTexts(controller)).toEqual(['one two', 'three four', 'five six']);
+      // "five" now lives in the third chunk — the reader stays where it was.
+      expect(controller.currentState.currentIndex).toBe(2);
+    });
+
+    test('packs a Japanese section at 文節 boundaries up to the limit', () => {
+      const { controller } = makeDomFixture('<p>吾輩は猫である。名前はまだ無い。</p>', 'ja');
+      controller.setMaxChunkChars(8);
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['吾輩は猫である。', '名前はまだ無い。']);
+      expect(controller.currentState.words[0]!.tokenCount).toBe(5);
+    });
+
+    test('splits at 文節 boundaries when the limit is tighter', () => {
+      const { controller } = makeDomFixture('<p>吾輩は猫である。名前はまだ無い。</p>', 'ja');
+      controller.setMaxChunkChars(6);
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['吾輩は', '猫である。', '名前は', 'まだ無い。']);
+    });
+
+    test('never merges across a sentence end even when the limit allows it', () => {
+      const { controller } = makeDomFixture('<p>吾輩は猫である。名前はまだ無い。</p>', 'ja');
+      controller.setMaxChunkChars(20); // the whole node is only 16 chars
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['吾輩は猫である。', '名前はまだ無い。']);
+    });
+
+    test('never merges across a paragraph boundary', () => {
+      const { controller } = makeDomFixture('<p>one two</p><p>three four</p>');
+      controller.setMaxChunkChars(20); // "one two three four" would fit
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['one two', 'three four']);
+    });
+
+    test('never merges across a <br>', () => {
+      const { controller } = makeDomFixture('<p>one two<br />three four</p>');
+      controller.setMaxChunkChars(20);
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['one two', 'three four']);
+    });
+
+    test('falls back to word boundaries when BudouX has not loaded', () => {
+      budoux.ready = false;
+      const { controller } = makeDomFixture('<p>吾輩は猫である。</p>', 'ja');
+      controller.setMaxChunkChars(6);
+      controller.start();
+
+      // Without phrase data every token may end a chunk, so packing is purely
+      // greedy — but the sentence end is still respected.
+      expect(wordTexts(controller)).toEqual(['吾輩は猫で', 'ある。']);
+    });
+
+    test('does not split hyphenated words inside a multi-word chunk', () => {
+      const { controller } = makeDomFixture('<p>well-known so-so</p>');
+      controller.setSplitHyphens(true);
+      controller.setMaxChunkChars(16); // "well-known so-so" is exactly 16 chars
+      controller.start();
+
+      const word = controller.currentState.words[0]!;
+      expect(word.tokenCount).toBe(2);
+      expect(controller.currentDisplayWord?.text).toBe('well-known so-so');
+    });
+
+    test('still splits hyphenated words when the chunk holds a single token', () => {
+      const { controller } = makeDomFixture('<p>well-known so-so</p>');
+      controller.setSplitHyphens(true);
+      controller.setMaxChunkChars(8); // "well-known" alone already exceeds it
+      controller.start();
+
+      expect(controller.currentState.words[0]!.tokenCount).toBeUndefined();
+      expect(controller.currentDisplayWord?.text).toBe('well-');
+    });
+
+    test('keeps an em-dash split tight when re-joining it', () => {
+      // The em-dash rule splits "best—of" into two tokens; nothing separated
+      // them in the book, so the chunk must not put a space back in.
+      const { controller } = makeDomFixture('<p>best—of all possible—worlds</p>');
+      controller.setMaxChunkChars(20);
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['best—of all', 'possible—worlds']);
+    });
+
+    test('keeps an en-dash range tight when re-joining it', () => {
+      const { controller } = makeDomFixture('<p>pages 10–15 covered</p>');
+      controller.setMaxChunkChars(20);
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['pages 10–15 covered']);
+    });
+
+    test('joins tokens that meet across an inline element with no whitespace', () => {
+      const { controller } = makeDomFixture('<p>“<em>x</em>”</p>');
+      controller.setMaxChunkChars(6);
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['“x”']);
+      expect(controller.currentState.words[0]!.tokenCount).toBe(3);
+    });
+
+    test('still spaces tokens that were separated by whitespace across nodes', () => {
+      const { controller } = makeDomFixture('<p>one <em>two</em> three</p>');
+      controller.setMaxChunkChars(16);
+      controller.start();
+
+      expect(wordTexts(controller)).toEqual(['one two three']);
+    });
+
+    test('does not consult BudouX for a text node without CJK', () => {
+      // An English passage inside a Japanese book is Latin text and must break
+      // at word boundaries like any other, not at model-guessed phrase offsets.
+      const { controller } = makeDomFixture('<p>Hello wonderful world today</p>', 'ja');
+      controller.setMaxChunkChars(16);
+      controller.start();
+
+      expect(budoux.parseJaPhraseBoundaries).not.toHaveBeenCalled();
+      expect(wordTexts(controller)).toEqual(['Hello wonderful', 'world today']);
+    });
+
+    test('still consults BudouX for the CJK text nodes of the same book', () => {
+      const { controller } = makeDomFixture('<p>Hello</p><p>吾輩は猫である。</p>', 'ja');
+      controller.setMaxChunkChars(16);
+      controller.start();
+
+      expect(budoux.parseJaPhraseBoundaries).toHaveBeenCalledTimes(1);
+      expect(budoux.parseJaPhraseBoundaries).toHaveBeenCalledWith('吾輩は猫である。');
+    });
+
+    test('stop() reports the live range text, not the joined chunk text', () => {
+      // Two spaces in the source: the chunk joins with one, so the synthesized
+      // text and the DOM text differ. RSVPControl compares stopPosition.text
+      // against range.toString() before drawing the sentence highlight.
+      const { controller } = makeDomFixture('<p>one  two</p>');
+      controller.setMaxChunkChars(10);
+      controller.start();
+
+      expect(controller.currentState.words[0]!.text).toBe('one two');
+
+      let stopPosition: { text: string; range?: Range } | null = null;
+      controller.addEventListener('rsvp-stop', (e) => {
+        stopPosition = (e as CustomEvent).detail;
+      });
+      controller.stop();
+
+      expect(stopPosition).not.toBeNull();
+      expect(stopPosition!.range!.toString()).toBe('one  two');
+      expect(stopPosition!.text).toBe('one  two');
+    });
+
+    test('stop() keeps reporting the word text for a single-token entry', () => {
+      const { controller } = makeDomFixture('<p>one  two</p>');
+      controller.start();
+
+      let stopPosition: { text: string } | null = null;
+      controller.addEventListener('rsvp-stop', (e) => {
+        stopPosition = (e as CustomEvent).detail;
+      });
+      controller.stop();
+
+      expect(stopPosition!.text).toBe('one');
+    });
+  });
+
+  describe('estimator pacing with chunks', () => {
+    // 100 fixed-width tokens ("w000".."w099", stride 5). At a 10 char limit two
+    // tokens fit per chunk ("w000 w001" is 9 chars; a third would be 14), so the
+    // section becomes exactly 50 chunks of tokenCount 2.
+    const WORD_COUNT = 100;
+    const TOKENS_PER_CHUNK = 2;
+
+    beforeEach(() => localStorage.clear());
+    afterEach(() => localStorage.clear());
+
+    function makeFixture() {
+      const text = Array.from(
+        { length: WORD_COUNT },
+        (_, i) => `w${String(i).padStart(3, '0')}`,
+      ).join(' ');
+      const doc = document.implementation.createHTMLDocument('estimator-chunks');
+      doc.body.innerHTML = `<p>${text}</p>`;
+      const textNode = doc.body.querySelector('p')!.firstChild as Text;
+
+      const resolveCFI = vi.fn().mockImplementation((cfi: string) => {
+        const m = cfi.match(/!\/4\/2\/1:(\d+)\)/);
+        if (!m) return null;
+        const offset = parseInt(m[1]!, 10);
+        return {
+          index: 0,
+          anchor: (d: Document) => {
+            const r = d.createRange();
+            r.setStart(textNode, offset);
+            r.setEnd(textNode, offset);
+            return r;
+          },
+        };
+      });
+
+      const view = {
+        renderer: {
+          primaryIndex: 0,
+          getContents: vi.fn().mockReturnValue([{ doc, index: 0 }]),
+        },
+        book: { toc: [] },
+        language: { isCJK: false },
+        tts: null,
+        getCFI: vi.fn().mockReturnValue('epubcfi(/6/2!/4/2/1:0)'),
+        resolveCFI,
+      } as unknown as FoliateView;
+
+      const controller = new RSVPController(view, 'estimator-chunk-book-abc123');
+      controller.setMaxChunkChars(10);
+      controller.start();
+      return { controller };
+    }
+
+    // Chunk c starts at token c * TOKENS_PER_CHUNK, i.e. character offset c * 10.
+    const cfiOfChunk = (c: number) => `epubcfi(/6/2!/4/2/1:${c * TOKENS_PER_CHUNK * 5})`;
+
+    test('the fixture really is 50 two-token chunks', () => {
+      const { controller } = makeFixture();
+      expect(controller.currentState.words).toHaveLength(WORD_COUNT / TOKENS_PER_CHUNK);
+      expect(controller.currentState.words[0]!.tokenCount).toBe(TOKENS_PER_CHUNK);
+    });
+
+    test('holds each chunk for as long as the words it contains', () => {
+      const { controller } = makeFixture();
+      controller.setExternallyDriven(true);
+      controller.driveEstimatedFromCfi(cfiOfChunk(5), 190);
+      expect(controller.currentState.currentIndex).toBe(5);
+
+      const perWordMs = 60000 / 190;
+      // One word's worth of time is not enough for a two-word chunk.
+      vi.advanceTimersByTime(perWordMs + 5);
+      expect(controller.currentState.currentIndex).toBe(5);
+
+      vi.advanceTimersByTime(perWordMs + 5);
+      expect(controller.currentState.currentIndex).toBe(6);
+    });
+
+    test('the look-ahead cap counts words, not chunks', () => {
+      const { controller } = makeFixture();
+      controller.setExternallyDriven(true);
+      controller.driveEstimatedFromCfi(cfiOfChunk(5), 600);
+      vi.advanceTimersByTime(600_000);
+
+      const chunksAhead = RSVPController.ESTIMATED_MAX_WORDS_AHEAD / TOKENS_PER_CHUNK;
+      expect(controller.currentState.currentIndex).toBe(5 + chunksAhead);
     });
   });
 });

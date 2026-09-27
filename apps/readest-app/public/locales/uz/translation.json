@@ -2605,5 +2605,7 @@
   "{{count}} voices available_one": "{{count}} ta ovoz mavjud",
   "{{count}} voices available_other": "{{count}} ta ovoz mavjud",
   "Multilingual": "Koʻp tilli",
-  "Expressive": "Ifodali"
+  "Expressive": "Ifodali",
+  "Chunk Size": "Boʻlak oʻlchami",
+  "Up to {{n}} chars": "{{n}} belgigacha"
 }

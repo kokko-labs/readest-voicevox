@@ -22,6 +22,7 @@ import { BookNote, PageInfo } from '@/types/book';
 import { TOCItem } from '@/libs/document';
 import { Insets } from '@/types/misc';
 import { initJieba } from '@/utils/jieba';
+import { initBudoux } from '@/utils/budoux';
 import RSVPOverlay from './RSVPOverlay';
 import RSVPStartDialog from './RSVPStartDialog';
 
@@ -713,6 +714,15 @@ const RSVPControl = forwardRef<RSVPControlHandle, RSVPControlProps>(function RSV
       if (primaryLanguage?.toLowerCase().startsWith('zh')) {
         initJieba().catch((e) => {
           console.warn('Failed to initialize jieba-wasm; falling back to Intl.Segmenter:', e);
+        });
+      }
+
+      // Same for Japanese books and BudouX, which supplies the 文節 boundaries
+      // the chunked display breaks at. Without it chunks fall back to breaking
+      // at segmenter tokens.
+      if (primaryLanguage?.toLowerCase().startsWith('ja')) {
+        initBudoux().catch((e) => {
+          console.warn('Failed to initialize BudouX; falling back to token boundaries:', e);
         });
       }
 

@@ -5,6 +5,12 @@ export interface RsvpWord {
   range?: Range;
   docIndex?: number;
   cfi?: string; // Canonical Fragment Identifier for precise position tracking
+  /**
+   * How many underlying words this entry shows at once. Absent (or 1) for the
+   * upstream one-word-at-a-time display; set by the chunk packer so pacing and
+   * hyphen splitting can tell a chunk from a single word.
+   */
+  tokenCount?: number;
 }
 
 export interface RsvpState {
@@ -18,6 +24,8 @@ export interface RsvpState {
   splitHyphens: boolean;
   cjkCharMode: boolean;
   startDelaySeconds: number;
+  /** Characters per flash for chunked display; 0 means one word at a time. */
+  maxChunkChars: number;
   hasCJK: boolean;
   progress: number;
 }

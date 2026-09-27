@@ -2605,5 +2605,7 @@
   "{{count}} voices available_one": "{{count}} குரல் கிடைக்கிறது",
   "{{count}} voices available_other": "{{count}} குரல்கள் கிடைக்கின்றன",
   "Multilingual": "பன்மொழி",
-  "Expressive": "உணர்ச்சிமிக்க"
+  "Expressive": "உணர்ச்சிமிக்க",
+  "Chunk Size": "தொகுதி அளவு",
+  "Up to {{n}} chars": "{{n}} எழுத்துகள் வரை"
 }

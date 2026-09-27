@@ -2540,5 +2540,7 @@
   "Use your own OpenAI-compatible speech service": "自分の OpenAI 互換音声サービスを使用",
   "{{count}} voices available_other": "{{count}} 個の音声が利用可能",
   "Multilingual": "多言語",
-  "Expressive": "表現豊か"
+  "Expressive": "表現豊か",
+  "Chunk Size": "表示幅",
+  "Up to {{n}} chars": "{{n}} 文字まで"
 }

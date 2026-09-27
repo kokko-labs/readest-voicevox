@@ -13,8 +13,11 @@ any VOICEVOX character or voice-library rights holder.
 Compared with upstream Readest, this fork:
 
 - connects to a local VOICEVOX Engine at `http://127.0.0.1:50021`;
-- lists its talk speakers and styles in the voice picker; and
-- uses the Engine for text-to-speech playback in desktop builds.
+- lists its talk speakers and styles in the voice picker;
+- uses the Engine for text-to-speech playback in desktop builds; and
+- adds a speed-reading setting that shows several words per flash, up to a
+  chosen number of characters, breaking Japanese text at phrase boundaries and
+  stopping at sentence and paragraph ends.
 
 Web and mobile builds retain the upstream text-to-speech behavior.
 

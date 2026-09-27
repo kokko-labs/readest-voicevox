@@ -2605,5 +2605,7 @@
   "{{count}} voices available_one": "{{count}}টি ভয়েস উপলব্ধ",
   "{{count}} voices available_other": "{{count}}টি ভয়েস উপলব্ধ",
   "Multilingual": "বহুভাষিক",
-  "Expressive": "অভিব্যক্তিপূর্ণ"
+  "Expressive": "অভিব্যক্তিপূর্ণ",
+  "Chunk Size": "খণ্ডের আকার",
+  "Up to {{n}} chars": "সর্বোচ্চ {{n}} অক্ষর"
 }

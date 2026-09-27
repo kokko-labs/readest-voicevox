@@ -2865,5 +2865,7 @@
   "{{count}} voices available_many": "{{count}} صوتًا متاحًا",
   "{{count}} voices available_other": "{{count}} صوت متاح",
   "Multilingual": "متعدد اللغات",
-  "Expressive": "معبّر"
+  "Expressive": "معبّر",
+  "Chunk Size": "حجم المقطع",
+  "Up to {{n}} chars": "حتى {{n}} حرف"
 }

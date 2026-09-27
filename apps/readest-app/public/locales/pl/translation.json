@@ -2735,5 +2735,7 @@
   "{{count}} voices available_many": "{{count}} dostępnych głosów",
   "{{count}} voices available_other": "{{count}} dostępnego głosu",
   "Multilingual": "Wielojęzyczny",
-  "Expressive": "Ekspresyjny"
+  "Expressive": "Ekspresyjny",
+  "Chunk Size": "Rozmiar grupy",
+  "Up to {{n}} chars": "Do {{n}} znaków"
 }

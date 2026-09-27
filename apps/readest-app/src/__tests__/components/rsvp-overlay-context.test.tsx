@@ -13,8 +13,17 @@ beforeAll(() => {
   }
 });
 
+// Key-as-content, plus i18next's {{name}} interpolation so labels built from a
+// value (e.g. the chunk-size options) render what the user would see.
 vi.mock('@/hooks/useTranslation', () => ({
-  useTranslation: () => (s: string) => s,
+  useTranslation:
+    () =>
+    (s: string, options?: Record<string, string | number>): string =>
+      options
+        ? s.replace(/{{(\w+)}}/g, (match, name: string) =>
+            name in options ? String(options[name]) : match,
+          )
+        : s,
 }));
 
 vi.mock('@/store/themeStore', () => ({
@@ -58,6 +67,7 @@ const buildState = (overrides: Partial<RsvpState> = {}): RsvpState => ({
   splitHyphens: false,
   cjkCharMode: false,
   startDelaySeconds: 3,
+  maxChunkChars: 0,
   hasCJK: false,
   progress: 0,
   ...overrides,
@@ -91,9 +101,11 @@ const buildController = (state: RsvpState) => {
     setSplitHyphens: vi.fn(),
     setCjkCharMode: vi.fn(),
     setStartDelay: vi.fn(),
+    setMaxChunkChars: vi.fn(),
     getWpmOptions: vi.fn(() => [100, 200, 300]),
     getPunctuationPauseOptions: vi.fn(() => [25, 50, 100]),
     getStartDelayOptions: vi.fn(() => [0, 1, 2, 3]),
+    getChunkCharOptions: vi.fn(() => [0, 6, 8, 10, 12, 16, 20]),
     addEventListener: vi.fn((type: string, listener: EventListener) => {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type)!.push(listener);
@@ -677,6 +689,87 @@ describe('RSVPOverlay — start delay setting (#4478)', () => {
     expect(select).not.toBeNull();
     fireEvent.change(select, { target: { value: '0' } });
     expect(controller.setStartDelay).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('RSVPOverlay — chunk display setting', () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  const openSettings = (container: HTMLElement) => {
+    fireEvent.click(container.querySelector('[aria-label="Settings"]') as HTMLElement);
+  };
+
+  const chunkState = () =>
+    buildState({
+      words: [{ text: 'a', orpIndex: 0, pauseMultiplier: 1 }],
+      currentIndex: 0,
+      maxChunkChars: 0,
+    });
+
+  test('renders every chunk-size option, with 0 shown as Off', () => {
+    const { container } = renderOverlay(chunkState());
+    openSettings(container);
+
+    const select = container.querySelector(
+      '[data-testid="rsvp-chunk-chars-select"]',
+    ) as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      '0',
+      '6',
+      '8',
+      '10',
+      '12',
+      '16',
+      '20',
+    ]);
+    expect(select.options[0]!.textContent).toBe('Off');
+    expect(select.options[2]!.textContent).toContain('8');
+  });
+
+  test('changing the select calls controller.setMaxChunkChars', () => {
+    const { container, controller } = renderOverlay(chunkState());
+    openSettings(container);
+
+    const select = container.querySelector(
+      '[data-testid="rsvp-chunk-chars-select"]',
+    ) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '8' } });
+    expect(controller.setMaxChunkChars).toHaveBeenCalledWith(8);
+  });
+
+  test('the setting is offered for non-CJK sections too', () => {
+    const { container } = renderOverlay(buildState({ hasCJK: false }));
+    openSettings(container);
+
+    expect(container.querySelector('[data-testid="rsvp-chunk-chars-select"]')).not.toBeNull();
+  });
+});
+
+describe('RSVPOverlay — settings selects follow the theme', () => {
+  afterEach(() => cleanup());
+
+  // The native dropdown list does not inherit the overlay's colors, so options
+  // left with only an inherited text color turn unreadable in dark themes.
+  test('every settings option is painted with the theme background and text', () => {
+    const { container } = renderOverlay(buildState({ hasCJK: false }));
+    fireEvent.click(container.querySelector('[aria-label="Settings"]') as HTMLElement);
+
+    const selects = Array.from(container.querySelectorAll('select'));
+    expect(selects.map((s) => s.dataset['testid'])).toEqual([
+      'rsvp-punctuation-pause-select',
+      'rsvp-start-delay-select',
+      'rsvp-chunk-chars-select',
+    ]);
+    for (const select of selects) {
+      for (const option of Array.from(select.options)) {
+        expect(option.style.backgroundColor).toBe('rgb(255, 255, 255)');
+        expect(option.style.color).toBe('rgb(17, 17, 17)');
+      }
+    }
   });
 });
 

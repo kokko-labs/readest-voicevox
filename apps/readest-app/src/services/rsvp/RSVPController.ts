@@ -1,6 +1,19 @@
 import { FoliateView } from '@/types/view';
 import { RsvpWord, RsvpState, RsvpPosition, RsvpStopPosition, RsvpStartChoice } from './types';
-import { containsCJK, isCJKPunctuation, splitTextIntoWords, getHyphenParts } from './utils';
+import {
+  containsCJK,
+  isCJKPunctuation,
+  splitTextIntoWords,
+  getHyphenParts,
+  getSegmenterLocale,
+} from './utils';
+import {
+  endsSentence,
+  endsWithPausePunctuation,
+  packTokensIntoChunks,
+  type RsvpToken,
+} from './chunk';
+import { isBudouxReady, parseJaPhraseBoundaries } from '@/utils/budoux';
 import { compare as compareCFI } from 'foliate-js/epubcfi.js';
 import { XCFI } from '@/utils/xcfi';
 import { isRangeLike } from '@/utils/range';
@@ -15,6 +28,42 @@ const DEFAULT_SPLIT_HYPHENS = false;
 const DEFAULT_CJK_CHAR_MODE = false;
 const DEFAULT_START_DELAY_SECONDS = 3;
 const START_DELAY_OPTIONS = [0, 1, 2, 3];
+const DEFAULT_MAX_CHUNK_CHARS = 0;
+const CHUNK_CHAR_OPTIONS = [0, 6, 8, 10, 12, 16, 20];
+
+// Block-level tags whose boundaries a chunk must not cross. `<br>` is handled
+// separately since it has no content of its own.
+const BLOCK_TAGS = new Set([
+  'ADDRESS',
+  'ARTICLE',
+  'BLOCKQUOTE',
+  'BODY',
+  'CAPTION',
+  'DD',
+  'DIV',
+  'DL',
+  'DT',
+  'FIGCAPTION',
+  'FIGURE',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'HR',
+  'LI',
+  'MAIN',
+  'OL',
+  'P',
+  'PRE',
+  'SECTION',
+  'TABLE',
+  'TD',
+  'TH',
+  'TR',
+  'UL',
+]);
 
 // Slice 5 (#3235): non-Edge TTS estimator. Sentence-only voices give us one
 // mark per sentence; RSVP jumps to the sentence's first word then SELF-PACES
@@ -35,6 +84,7 @@ const POSITION_KEY_PREFIX = 'readest_rsvp_pos_';
 const SPLIT_HYPHENS_KEY = 'readest_rsvp_split_hyphens';
 const CJK_CHAR_MODE_KEY = 'readest_rsvp_cjk_char_mode';
 const START_DELAY_KEY = 'readest_rsvp_start_delay';
+const MAX_CHUNK_CHARS_KEY = 'readest_rsvp_max_chunk_chars';
 
 // Section-only CFI (no '!') sorts before any word CFI in that section.
 const stripCfiPath = (cfi: string): string => cfi.replace(/!.*\)$/, ')');
@@ -56,6 +106,7 @@ export class RSVPController extends EventTarget {
     splitHyphens: DEFAULT_SPLIT_HYPHENS,
     cjkCharMode: DEFAULT_CJK_CHAR_MODE,
     startDelaySeconds: DEFAULT_START_DELAY_SECONDS,
+    maxChunkChars: DEFAULT_MAX_CHUNK_CHARS,
     hasCJK: false,
     progress: 0,
   };
@@ -120,6 +171,10 @@ export class RSVPController extends EventTarget {
     if (savedStartDelay !== null) {
       this.state.startDelaySeconds = savedStartDelay;
     }
+    const savedMaxChunkChars = this.loadMaxChunkCharsFromStorage();
+    if (savedMaxChunkChars !== null) {
+      this.state.maxChunkChars = savedMaxChunkChars;
+    }
   }
 
   get currentState(): RsvpState {
@@ -141,6 +196,9 @@ export class RSVPController extends EventTarget {
     const word = this.currentWord;
     if (!word) return null;
     if (!this.state.splitHyphens) return word;
+    // A chunk already shows several words at once; splitting its hyphens on top
+    // of that would break the chunk apart mid-flash.
+    if ((word.tokenCount ?? 1) > 1) return word;
     const parts = getHyphenParts(word.text);
     if (parts.length <= 1) return word;
     const partText = parts[this.state.currentPartIndex] ?? word.text;
@@ -281,6 +339,42 @@ export class RSVPController extends EventTarget {
       if (stored !== null) {
         const parsed = parseInt(stored, 10);
         if (START_DELAY_OPTIONS.includes(parsed)) return parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  getChunkCharOptions(): number[] {
+    return CHUNK_CHAR_OPTIONS;
+  }
+
+  setMaxChunkChars(chars: number): void {
+    if (!CHUNK_CHAR_OPTIONS.includes(chars)) return;
+    if (this.state.maxChunkChars === chars) return;
+    this.state.maxChunkChars = chars;
+    try {
+      localStorage.setItem(MAX_CHUNK_CHARS_KEY, chars.toString());
+    } catch {
+      /* ignore */
+    }
+    // Chunking changes what one entry of the word list holds, so the cached
+    // words and the current section's list both need to be rebuilt.
+    this.cachedWords = null;
+    if (this.state.active) {
+      this.reextractPreservingPosition();
+    } else {
+      this.emitStateChange();
+    }
+  }
+
+  private loadMaxChunkCharsFromStorage(): number | null {
+    try {
+      const stored = localStorage.getItem(MAX_CHUNK_CHARS_KEY);
+      if (stored !== null) {
+        const parsed = parseInt(stored, 10);
+        if (CHUNK_CHAR_OPTIONS.includes(parsed)) return parsed;
       }
     } catch {
       /* ignore */
@@ -571,7 +665,7 @@ export class RSVPController extends EventTarget {
       stopPosition = {
         wordIndex: this.state.currentIndex,
         totalWords: this.state.words.length,
-        text: currentWord?.text || '',
+        text: this.getStopText(currentWord),
         range: currentWord?.range,
         docIndex: currentWord?.docIndex,
         cfi: this.getCfiForWord(currentWord),
@@ -593,6 +687,22 @@ export class RSVPController extends EventTarget {
       currentPartIndex: 0,
     };
     this.emitStateChange();
+  }
+
+  // A chunk's text is synthesized from its members (CJK joined tight, Latin
+  // joined with one space), so it need not match the text the range covers —
+  // and RSVPControl compares the two before drawing the exit highlight. Read it
+  // back off the live range for chunks; single words are reported as before.
+  private getStopText(word: RsvpWord | undefined): string {
+    if (word?.range && (word.tokenCount ?? 1) > 1) {
+      try {
+        const rangeText = word.range.toString();
+        if (rangeText) return rangeText;
+      } catch {
+        /* fall back to the synthesized text */
+      }
+    }
+    return word?.text || '';
   }
 
   requestStart(selectionText?: string): void {
@@ -867,13 +977,19 @@ export class RSVPController extends EventTarget {
     if (!this.#externallyDriven || this.#estimatorAnchorIndex < 0) return;
 
     // HOLD at the cap: never advance more than MAX_WORDS_AHEAD past the anchor.
-    const capIndex = Math.min(
-      this.state.words.length - 1,
-      this.#estimatorAnchorIndex + ESTIMATED_MAX_WORDS_AHEAD,
-    );
-    if (this.state.currentIndex >= capIndex) return;
+    // The allowance is in WORDS, so a chunk showing several at once consumes
+    // several of it — otherwise chunked display would outrun the audio N-fold.
+    let wordsAhead = 0;
+    for (let i = this.#estimatorAnchorIndex; i < this.state.currentIndex; i++) {
+      wordsAhead += this.state.words[i]?.tokenCount ?? 1;
+    }
+    if (wordsAhead >= ESTIMATED_MAX_WORDS_AHEAD) return;
+    if (this.state.currentIndex >= this.state.words.length - 1) return;
 
-    const perWordMs = 60000 / this.#estimatorWpm;
+    // The displayed entry stays put for as long as the words it holds would have
+    // taken one by one, so the estimate tracks the audio either way.
+    const displayedWords = this.state.words[this.state.currentIndex]?.tokenCount ?? 1;
+    const perWordMs = (60000 / this.#estimatorWpm) * displayedWords;
     this.#estimatorTimer = setTimeout(() => {
       this.#estimatorTimer = null;
       if (!this.#externallyDriven || this.#estimatorAnchorIndex < 0) return;
@@ -1133,7 +1249,7 @@ export class RSVPController extends EventTarget {
 
   private advanceToNextWord(): void {
     const word = this.currentWord;
-    if (word && this.state.splitHyphens) {
+    if (word && this.state.splitHyphens && (word.tokenCount ?? 1) <= 1) {
       const parts = getHyphenParts(word.text);
       if (this.state.currentPartIndex < parts.length - 1) {
         this.state.currentPartIndex += 1;
@@ -1197,14 +1313,35 @@ export class RSVPController extends EventTarget {
     docIndex: number,
   ): RsvpWord[] {
     const excludeTags = new Set(['SCRIPT', 'STYLE', 'NAV', 'HEADER', 'FOOTER', 'ASIDE']);
-    const words: RsvpWord[] = [];
+    const words: RsvpToken[] = [];
+
+    // Extraction runs over 45k+ words a section, so the boundary bookkeeping the
+    // packer needs is only collected when chunking is actually on.
+    const maxChunkChars = this.state.maxChunkChars;
+    const chunking = maxChunkChars > 0;
+    const japaneseBook = !!this.primaryLanguage?.toLowerCase().startsWith('ja');
+    // Set when a block boundary or <br> has been passed and the next token that
+    // appears must not be merged with what came before it.
+    let pendingHardBreak = false;
+    // Start offsets of the tokens of the text node being processed, for mapping
+    // BudouX phrase offsets back onto tokens.
+    const tokenStarts: number[] = [];
+    // Whether the previous text node that produced tokens ended right at its
+    // last token, so a token opening the next node may join it without a space.
+    let previousNodeEndedTight = false;
 
     const walk = (node: Node): void => {
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent || '';
         const nodeWords = splitTextIntoWords(text, this.primaryLanguage, this.state.cjkCharMode);
+        const firstIndex = words.length;
+        if (chunking) tokenStarts.length = 0;
 
         let offset = 0;
+        // End offset of the previous token within THIS node, for detecting the
+        // segmenter's own splits (e.g. the em-dash rule on "best—of").
+        let previousEnd = -1;
+        let firstWordStart = -1;
         for (const word of nodeWords) {
           const wordStart = text.indexOf(word, offset);
           if (wordStart === -1) continue;
@@ -1232,7 +1369,44 @@ export class RSVPController extends EventTarget {
             });
           }
 
+          if (chunking) {
+            tokenStarts.push(wordStart);
+            if (previousEnd === wordStart) words[words.length - 1]!.tightJoinBefore = true;
+            if (firstWordStart < 0) firstWordStart = wordStart;
+            previousEnd = wordStart + word.length;
+          }
           offset = wordStart + word.length;
+        }
+
+        if (!chunking) return;
+
+        if (words.length === firstIndex) {
+          // A node that yielded nothing but whitespace still separates the
+          // tokens on either side of it.
+          if (/\s/.test(text)) previousNodeEndedTight = false;
+          return;
+        }
+
+        const brokeBefore = pendingHardBreak;
+        if (pendingHardBreak) {
+          words[firstIndex]!.hardBreakBefore = true;
+          pendingHardBreak = false;
+        }
+        // Tokens meeting across an inline element (e.g. `“<em>x</em>”`) are only
+        // adjacent if neither side had whitespace at the seam.
+        if (
+          firstIndex > 0 &&
+          !brokeBefore &&
+          previousNodeEndedTight &&
+          !/\s/.test(text.slice(0, firstWordStart))
+        ) {
+          words[firstIndex]!.tightJoinBefore = true;
+        }
+        previousNodeEndedTight = !/\s/.test(text.slice(previousEnd));
+
+        this.markPhraseBoundaries(text, words, firstIndex, tokenStarts, japaneseBook);
+        for (let i = firstIndex; i < words.length; i++) {
+          if (endsSentence(words[i]!.text)) words[i]!.sentenceEndAfter = true;
         }
         return;
       }
@@ -1240,24 +1414,75 @@ export class RSVPController extends EventTarget {
       if (node.nodeType !== Node.ELEMENT_NODE) return;
 
       const el = node as HTMLElement;
-      if (excludeTags.has(el.tagName.toUpperCase())) return;
+      const tagName = el.tagName.toUpperCase();
+      if (excludeTags.has(tagName)) return;
 
       const style = el.ownerDocument.defaultView?.getComputedStyle(el);
       if (style?.display === 'none' || style?.visibility === 'hidden') return;
 
+      if (chunking && tagName === 'BR') {
+        pendingHardBreak = true;
+        return;
+      }
+
+      // Entering and leaving a block both end a line of text, so either side of
+      // a block element is a boundary a chunk must not span.
+      const isBlock = chunking && BLOCK_TAGS.has(tagName);
+      if (isBlock) pendingHardBreak = true;
+
       for (const child of Array.from(el.childNodes)) {
         walk(child);
       }
+
+      if (isBlock) pendingHardBreak = true;
     };
 
     walk(element);
 
-    // Insert a blank ISI frame between consecutive identical words.
-    return words.flatMap((word, i) =>
+    // Insert a blank ISI frame between consecutive identical words. Done before
+    // packing so the frame still separates the pair it was inserted for.
+    const withBlanks: RsvpToken[] = words.flatMap((word, i) =>
       i + 1 < words.length && word.text === words[i + 1]!.text
         ? [word, { text: ' ', orpIndex: 0, pauseMultiplier: 0.5 }]
         : [word],
     );
+
+    return chunking ? packTokensIntoChunks(withBlanks, maxChunkChars) : withBlanks;
+  }
+
+  /**
+   * Mark which tokens of a text node may end a chunk. Japanese text uses
+   * BudouX's 文節 boundaries, rounded up to the enclosing token's end;
+   * everything else may break at any token boundary — including a Latin passage
+   * inside a Japanese book, and Japanese before BudouX has loaded.
+   *
+   * The end of a text node always ends a phrase: BudouX only sees one node at a
+   * time, so a phrase running through an inline element such as `<em>` is cut
+   * at the tag.
+   */
+  private markPhraseBoundaries(
+    text: string,
+    tokens: RsvpToken[],
+    firstIndex: number,
+    tokenStarts: number[],
+    japaneseBook: boolean,
+  ): void {
+    const isJapanese = containsCJK(text) && (japaneseBook || getSegmenterLocale(text) === 'ja');
+    if (!isJapanese || !isBudouxReady()) {
+      for (let i = firstIndex; i < tokens.length; i++) {
+        tokens[i]!.phraseBoundaryAfter = true;
+      }
+      return;
+    }
+
+    let i = firstIndex;
+    for (const boundary of parseJaPhraseBoundaries(text)) {
+      // The last token that starts before the boundary owns it, which rounds a
+      // boundary falling inside a token up to that token's end.
+      while (i + 1 < tokens.length && tokenStarts[i + 1 - firstIndex]! < boundary) i++;
+      if (tokenStarts[i - firstIndex]! < boundary) tokens[i]!.phraseBoundaryAfter = true;
+    }
+    tokens[tokens.length - 1]!.phraseBoundaryAfter = true;
   }
 
   private calculateORP(word: string): number {
@@ -1307,7 +1532,7 @@ export class RSVPController extends EventTarget {
     const baseMs = 60000 / wpm;
     let duration = baseMs * word.pauseMultiplier;
 
-    if (/[.!?,;:–—]$/.test(word.text)) {
+    if (endsWithPausePunctuation(word.text)) {
       duration += this.state.punctuationPauseMs;
     }
 

@@ -2540,5 +2540,7 @@
   "Use your own OpenAI-compatible speech service": "Dùng dịch vụ giọng nói tương thích OpenAI của riêng bạn",
   "{{count}} voices available_other": "Có {{count}} giọng đọc",
   "Multilingual": "Đa ngôn ngữ",
-  "Expressive": "Biểu cảm"
+  "Expressive": "Biểu cảm",
+  "Chunk Size": "Kích thước nhóm",
+  "Up to {{n}} chars": "Tối đa {{n}} ký tự"
 }

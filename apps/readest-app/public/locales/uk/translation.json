@@ -2735,5 +2735,7 @@
   "{{count}} voices available_many": "Доступно {{count}} голосів",
   "{{count}} voices available_other": "Доступно {{count}} голосу",
   "Multilingual": "Багатомовний",
-  "Expressive": "Виразний"
+  "Expressive": "Виразний",
+  "Chunk Size": "Розмір групи",
+  "Up to {{n}} chars": "До {{n}} символів"
 }

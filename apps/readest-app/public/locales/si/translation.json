@@ -2605,5 +2605,7 @@
   "{{count}} voices available_one": "හඬ {{count}}ක් ලබා ගත හැක",
   "{{count}} voices available_other": "හඬ {{count}}ක් ලබා ගත හැක",
   "Multilingual": "බහුභාෂා",
-  "Expressive": "ප්‍රකාශනශීලී"
+  "Expressive": "ප්‍රකාශනශීලී",
+  "Chunk Size": "කැබලි ප්‍රමාණය",
+  "Up to {{n}} chars": "අක්ෂර {{n}} දක්වා"
 }

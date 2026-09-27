@@ -2605,5 +2605,7 @@
   "{{count}} voices available_one": "{{count}} आवाज़ उपलब्ध है",
   "{{count}} voices available_other": "{{count}} आवाज़ें उपलब्ध हैं",
   "Multilingual": "बहुभाषी",
-  "Expressive": "अभिव्यंजक"
+  "Expressive": "अभिव्यंजक",
+  "Chunk Size": "खंड आकार",
+  "Up to {{n}} chars": "अधिकतम {{n}} वर्ण"
 }

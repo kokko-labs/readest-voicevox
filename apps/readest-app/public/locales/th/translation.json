@@ -2540,5 +2540,7 @@
   "Use your own OpenAI-compatible speech service": "ใช้บริการเสียงพูดที่เข้ากันได้กับ OpenAI ของคุณเอง",
   "{{count}} voices available_other": "มี {{count}} เสียงให้ใช้งาน",
   "Multilingual": "หลายภาษา",
-  "Expressive": "แสดงอารมณ์"
+  "Expressive": "แสดงอารมณ์",
+  "Chunk Size": "ขนาดกลุ่ม",
+  "Up to {{n}} chars": "ไม่เกิน {{n}} อักขระ"
 }

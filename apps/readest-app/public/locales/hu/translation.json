@@ -2605,5 +2605,7 @@
   "{{count}} voices available_one": "{{count}} hang érhető el",
   "{{count}} voices available_other": "{{count}} hang érhető el",
   "Multilingual": "Többnyelvű",
-  "Expressive": "Kifejező"
+  "Expressive": "Kifejező",
+  "Chunk Size": "Csoportméret",
+  "Up to {{n}} chars": "Legfeljebb {{n}} karakter"
 }

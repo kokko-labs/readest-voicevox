@@ -2670,5 +2670,7 @@
   "{{count}} voices available_few": "{{count}} voci disponibile",
   "{{count}} voices available_other": "{{count}} de voci disponibile",
   "Multilingual": "Multilingv",
-  "Expressive": "Expresiv"
+  "Expressive": "Expresiv",
+  "Chunk Size": "Dimensiune grup",
+  "Up to {{n}} chars": "Până la {{n}} caractere"
 }

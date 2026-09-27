@@ -99,6 +99,48 @@ const DICT_POPUP_PADDING = 10;
 const DICT_POPUP_MAX_WIDTH = 480;
 const DICT_POPUP_MAX_HEIGHT = 360;
 
+interface SettingsSelectProps {
+  testId: string;
+  value: number;
+  options: { value: number; label: string }[];
+  onChange: (value: number) => void;
+  bgColor: string;
+  fgColor: string;
+  isDarkMode: boolean;
+}
+
+// A select in the settings row. The native dropdown list does not inherit the
+// overlay's colors, so the options are painted with the theme explicitly and
+// color-scheme is set for platforms that ignore option styles; otherwise the
+// list shows light text on a light popup in dark themes.
+const SettingsSelect: React.FC<SettingsSelectProps> = ({
+  testId,
+  value,
+  options,
+  onChange,
+  bgColor,
+  fgColor,
+  isDarkMode,
+}) => (
+  <select
+    data-testid={testId}
+    className='cursor-pointer rounded-sm border border-gray-500/30 bg-gray-500/20 px-1.5 py-1 text-xs font-medium transition-colors hover:border-gray-500/40 hover:bg-gray-500/30'
+    style={{ color: 'inherit', colorScheme: isDarkMode ? 'dark' : 'light' }}
+    value={value}
+    onChange={(e) => onChange(parseInt(e.target.value, 10))}
+  >
+    {options.map((option) => (
+      <option
+        key={option.value}
+        value={option.value}
+        style={{ backgroundColor: bgColor, color: fgColor }}
+      >
+        {option.label}
+      </option>
+    ))}
+  </select>
+);
+
 interface WpmEntryProps {
   controller: RSVPController;
   wpm: number;
@@ -222,7 +264,7 @@ const RSVPOverlay: React.FC<RSVPOverlayProps> = ({
   onManageDictionary,
 }) => {
   const _ = useTranslation();
-  const { themeCode, isDarkMode: _isDarkMode } = useThemeStore();
+  const { themeCode, isDarkMode } = useThemeStore();
   const isSettingsDialogOpen = useSettingsStore((s) => s.isSettingsDialogOpen);
   const [state, setState] = useState<RsvpState>(controller.currentState);
   const currentWord = controller.currentDisplayWord;
@@ -742,6 +784,7 @@ const RSVPOverlay: React.FC<RSVPOverlayProps> = ({
   // Use theme colors directly from themeCode (bg, fg, primary are already resolved from palette)
   const bgColor = themeCode.bg;
   const fgColor = themeCode.fg;
+  const selectTheme = { bgColor, fgColor, isDarkMode };
   const accentColor = themeCode.primary;
   const effectiveOrpColor = ORP_COLOR_OPTIONS[orpColorIndex] || accentColor;
   const currentFontSize =
@@ -1286,36 +1329,47 @@ const RSVPOverlay: React.FC<RSVPOverlayProps> = ({
             {/* Punctuation pause */}
             <label className='flex cursor-pointer items-center gap-1.5 font-medium opacity-80'>
               <span className='mr-0.5 font-medium opacity-50'>{_('Punctuation Delay')}</span>
-              <select
-                className='cursor-pointer rounded-sm border border-gray-500/30 bg-gray-500/20 px-1.5 py-1 text-xs font-medium transition-colors hover:border-gray-500/40 hover:bg-gray-500/30'
-                style={{ color: 'inherit' }}
+              <SettingsSelect
+                testId='rsvp-punctuation-pause-select'
                 value={state.punctuationPauseMs}
-                onChange={(e) => controller.setPunctuationPause(parseInt(e.target.value, 10))}
-              >
-                {controller.getPunctuationPauseOptions().map((option) => (
-                  <option key={option} value={option}>
-                    {option}ms
-                  </option>
-                ))}
-              </select>
+                options={controller
+                  .getPunctuationPauseOptions()
+                  .map((option) => ({ value: option, label: `${option}ms` }))}
+                onChange={(value) => controller.setPunctuationPause(value)}
+                {...selectTheme}
+              />
             </label>
 
             {/* Pre-start countdown delay */}
             <label className='flex cursor-pointer items-center gap-1.5 font-medium opacity-80'>
               <span className='mr-0.5 font-medium opacity-50'>{_('Start Delay')}</span>
-              <select
-                data-testid='rsvp-start-delay-select'
-                className='cursor-pointer rounded-sm border border-gray-500/30 bg-gray-500/20 px-1.5 py-1 text-xs font-medium transition-colors hover:border-gray-500/40 hover:bg-gray-500/30'
-                style={{ color: 'inherit' }}
+              <SettingsSelect
+                testId='rsvp-start-delay-select'
                 value={state.startDelaySeconds}
-                onChange={(e) => controller.setStartDelay(parseInt(e.target.value, 10))}
-              >
-                {controller.getStartDelayOptions().map((option) => (
-                  <option key={option} value={option}>
-                    {option === 0 ? _('Off') : `${option}s`}
-                  </option>
-                ))}
-              </select>
+                options={controller.getStartDelayOptions().map((option) => ({
+                  value: option,
+                  label: option === 0 ? _('Off') : `${option}s`,
+                }))}
+                onChange={(value) => controller.setStartDelay(value)}
+                {...selectTheme}
+              />
+            </label>
+
+            {/* Chunk size — how many characters one flash may hold. Off keeps
+                the one-word-at-a-time display; useful in every language, so it
+                is not gated on hasCJK. */}
+            <label className='flex cursor-pointer items-center gap-1.5 font-medium opacity-80'>
+              <span className='mr-0.5 font-medium opacity-50'>{_('Chunk Size')}</span>
+              <SettingsSelect
+                testId='rsvp-chunk-chars-select'
+                value={state.maxChunkChars}
+                options={controller.getChunkCharOptions().map((option) => ({
+                  value: option,
+                  label: option === 0 ? _('Off') : _('Up to {{n}} chars', { n: option }),
+                }))}
+                onChange={(value) => controller.setMaxChunkChars(value)}
+                {...selectTheme}
+              />
             </label>
 
             {/* Font size */}
