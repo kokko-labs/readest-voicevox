@@ -81,6 +81,11 @@ export class VoicevoxSpeechProvider implements SpeechProvider {
   readonly label = 'VOICEVOX';
   readonly cacheable = true;
 
+  // `/speakers` is already ordered like the VOICEVOX picker. Every pair compares
+  // equal, so the stable sort keeps that speaker/style order instead of
+  // applying Readest's name sort.
+  compareVoices = () => 0;
+
   readonly #endpoint: string;
   readonly #discoveryTimeoutMs: number;
 
