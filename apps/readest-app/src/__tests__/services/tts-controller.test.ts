@@ -82,6 +82,8 @@ vi.mock('@/utils/node', () => ({
 vi.mock('@/utils/lang', () => ({
   isValidLang: vi.fn(() => true),
   isCJKLang: vi.fn(() => false),
+  // Primary-subtag match, enough for the engine language fallback in setLang.
+  isSameLang: vi.fn((a: string, b: string) => a.split('-')[0] === b.split('-')[0]),
 }));
 
 vi.mock('foliate-js/tts.js', () => ({
@@ -660,6 +662,34 @@ describe('TTSController', () => {
       await controller.init();
       await controller.setLang('zh');
       expect(controller.ttsLang).toBe('zh');
+    });
+
+    const withRememberedVoicevox = async () => {
+      vi.mocked(TTSUtils.getPreferredClient).mockReturnValue('voicevox');
+      const c = new TTSController(createMockAppService(false, false, true), mockView);
+      await c.init();
+      c.ttsVoicevoxVoices = [{ id: 'voicevox:3', name: 'ずんだもん (ノーマル)', lang: 'ja-JP' }];
+      c.ttsEdgeClient.initialized = true;
+      expect(c.ttsClient.name).toBe('voicevox');
+      return c;
+    };
+
+    test('a remembered VOICEVOX choice yields to Edge for a book it has no voice for', async () => {
+      const c = await withRememberedVoicevox();
+
+      await c.setLang('en-US');
+
+      expect(c.ttsClient.name).toBe('edge');
+      // The choice itself is kept for the Japanese books VOICEVOX can read.
+      expect(TTSUtils.setPreferredClient).not.toHaveBeenCalled();
+    });
+
+    test('keeps VOICEVOX for a Japanese book', async () => {
+      const c = await withRememberedVoicevox();
+
+      await c.setLang('ja');
+
+      expect(c.ttsClient.name).toBe('voicevox');
     });
   });
 

@@ -2201,6 +2201,7 @@ export class TTSController extends EventTarget {
     // language it has no voice for, the default engine reads instead, and the
     // choice stays remembered for books it can read.
     // Custom services likewise, unless a voice of theirs reads any language.
+    // VOICEVOX likewise: its voices only speak Japanese.
     const speaks = (voices: TTSVoice[]) =>
       voices.some(
         (voice) =>
@@ -2208,7 +2209,8 @@ export class TTSController extends EventTarget {
       );
     if (
       (this.ttsClient === this.ttsReadestClient && !speaks(this.ttsReadestVoices)) ||
-      (this.ttsClient === this.ttsCustomClient && !speaks(this.ttsCustomVoices))
+      (this.ttsClient === this.ttsCustomClient && !speaks(this.ttsCustomVoices)) ||
+      (this.ttsClient === this.ttsVoicevoxClient && !speaks(this.ttsVoicevoxVoices))
     ) {
       this.ttsClient = this.ttsEdgeClient.initialized ? this.ttsEdgeClient : this.ttsWebClient;
     }
